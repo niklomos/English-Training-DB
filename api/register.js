@@ -1,6 +1,11 @@
 // api/register.js
 const bcrypt = require('bcryptjs');
-const { getPool, sendJson } = require('./db');
+// เดิม: const { query } = require('../db');
+const { query } = require('../lib/db');
+
+// เดิม: const { sendJson, readJsonBody, ... } = require('../http');
+const { sendJson, readJsonBody, createSession, getSessionUser, destroySession } = require('../lib/http');
+
 
 // helper อ่าน body JSON
 function readBody(req) {

@@ -1,116 +1,86 @@
+// api/vocab.js
+// เดิม: const { query } = require('../db');
 const { query } = require('../lib/db');
-const { readJsonBody, getUserFromRequest } = require('../lib/http');
 
-module.exports = async (req, res) => {
-  const user = await getUserFromRequest(req);
+// เดิม: const { sendJson, readJsonBody, ... } = require('../http');
+const { sendJson, readJsonBody, createSession, getSessionUser, destroySession } = require('../lib/http');
+
+
+
+module.exports = async function handler(req, res) {
+  // ต้องมี login ก่อนเสมอ
+  const user = await getSessionUser(req);
   if (!user) {
-    res.statusCode = 401;
-    return res.end(JSON.stringify({ error: 'ต้อง login ก่อน' }));
+    return sendJson(res, 401, { ok: false, error: 'not logged in' });
   }
 
-  res.setHeader('Content-Type', 'application/json');
-
-  // 1) GET: list vocab ของ user
   if (req.method === 'GET') {
-    const result = await query(
-      `
-      SELECT id, word, translation, correct, wrong, last_seen
-      FROM vocab
-      WHERE user_id = $1
-      ORDER BY id ASC
-    `,
-      [user.id]
-    );
-    return res.end(JSON.stringify({ items: result.rows }));
-  }
-
-  // body สำหรับ POST/PUT/DELETE
-  const body = await readJsonBody(req);
-
-  // 2) POST: เพิ่มคำใหม่ (กันคำซ้ำใน user เดียวกัน)
-  if (req.method === 'POST') {
-    const word = (body.word || '').trim();
-    const translation = (body.translation || '').trim();
-
-    if (!word || !translation) {
-      res.statusCode = 400;
-      return res.end(JSON.stringify({ error: 'ต้องมีทั้ง word และ translation' }));
-    }
-
-    // เช็คซ้ำเคสไม่สนตัวเล็กใหญ่
-    const dup = await query(
-      `
-      SELECT id FROM vocab
-      WHERE user_id = $1 AND lower(word) = lower($2)
-    `,
-      [user.id, word]
-    );
-
-    if (dup.rows.length) {
-      res.statusCode = 409;
-      return res.end(
-        JSON.stringify({ error: 'คำนี้มีอยู่แล้วใน vocabulary ของคุณ' })
+    try {
+      const result = await query(
+        `SELECT id, word, translation, correct, wrong, last_seen
+           FROM vocab_entries
+          WHERE user_id = $1
+          ORDER BY id`,
+        [user.id]
       );
+
+      return sendJson(res, 200, {
+        ok: true,
+        items: result.rows,
+      });
+    } catch (err) {
+      console.error('vocab GET error', err);
+      return sendJson(res, 500, { ok: false, error: 'internal error' });
+    }
+  }
+
+  if (req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: e.message });
     }
 
-    const result = await query(
-      `
-      INSERT INTO vocab (user_id, word, translation, correct, wrong, last_seen)
-      VALUES ($1, $2, $3, 0, 0, NOW())
-      RETURNING id, word, translation, correct, wrong, last_seen
-    `,
-      [user.id, word, translation]
-    );
-
-    return res.end(JSON.stringify({ item: result.rows[0] }));
-  }
-
-  // 3) PUT: แก้ไข vocab เช่น word/translation หรือสถิติ correct/wrong
-  if (req.method === 'PUT') {
-    const id = body.id;
-    const word = (body.word || '').trim();
-    const translation = (body.translation || '').trim();
-    const correct = body.correct ?? 0;
-    const wrong = body.wrong ?? 0;
-
-    // เช็คว่าเป็นของ user นี้จริงไหม
-    const check = await query(
-      'SELECT id FROM vocab WHERE id = $1 AND user_id = $2',
-      [id, user.id]
-    );
-    if (!check.rows.length) {
-      res.statusCode = 404;
-      return res.end(JSON.stringify({ error: 'ไม่พบคำศัพท์นี้' }));
+    const { word, translation } = body || {};
+    if (!word || !translation) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'word & translation required',
+      });
     }
 
-    const result = await query(
-      `
-      UPDATE vocab
-      SET word = $1,
-          translation = $2,
-          correct = $3,
-          wrong = $4,
-          last_seen = NOW()
-      WHERE id = $5 AND user_id = $6
-      RETURNING id, word, translation, correct, wrong, last_seen
-    `,
-      [word, translation, correct, wrong, id, user.id]
-    );
+    try {
+      // เช็คคำซ้ำ (case-insensitive) ต่อ user
+      const existing = await query(
+        'SELECT id FROM vocab_entries WHERE user_id = $1 AND LOWER(word) = LOWER($2)',
+        [user.id, word]
+      );
 
-    return res.end(JSON.stringify({ item: result.rows[0] }));
+      if (existing.rows.length) {
+        return sendJson(res, 409, {
+          ok: false,
+          error: 'word already exists for this user',
+        });
+      }
+
+      const result = await query(
+        `INSERT INTO vocab_entries (user_id, word, translation, correct, wrong, last_seen)
+         VALUES ($1,$2,$3,0,0,now())
+         RETURNING id, word, translation, correct, wrong, last_seen`,
+        [user.id, word, translation]
+      );
+
+      return sendJson(res, 201, {
+        ok: true,
+        item: result.rows[0],
+      });
+    } catch (err) {
+      console.error('vocab POST error', err);
+      return sendJson(res, 500, { ok: false, error: 'internal error' });
+    }
   }
 
-  // 4) DELETE: ลบ vocab
-  if (req.method === 'DELETE') {
-    const id = body.id;
-    await query('DELETE FROM vocab WHERE id = $1 AND user_id = $2', [
-      id,
-      user.id,
-    ]);
-    return res.end(JSON.stringify({ ok: true }));
-  }
-
-  // method อื่น ๆ
-  res.statusCode = 405;
-  res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+  res.setHeader('Allow', 'GET, POST');
+  return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
 };

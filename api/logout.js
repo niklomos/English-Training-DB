@@ -1,30 +1,17 @@
-const cookie = require('cookie');
-const { getSessionTokenFromReq, deleteSession } = require('../lib/http');
+// api/logout.js
+const { sendJson, destroySession } = require('../http');
 
-module.exports = async (req, res) => {
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.statusCode = 405;
-    return res.end('Method Not Allowed');
+    res.setHeader('Allow', 'POST');
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
   }
 
-  const token = getSessionTokenFromReq(req);
-  if (token) {
-    await deleteSession(token);
+  try {
+    await destroySession(req, res);
+    return sendJson(res, 200, { ok: true });
+  } catch (err) {
+    console.error('logout error', err);
+    return sendJson(res, 500, { ok: false, error: 'internal error' });
   }
-
-  // เคลียร์ cookie ทิ้ง
-  res.setHeader(
-    'Set-Cookie',
-    cookie.serialize('session', '', {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax',
-      path: '/',
-      expires: new Date(0),
-    })
-  );
-
-  res.statusCode = 200;
-  res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ ok: true }));
 };

@@ -1,55 +1,59 @@
+// api/login.js
 const bcrypt = require('bcryptjs');
-const cookie = require('cookie');
-const { query } = require('../lib/db');
-const { readJsonBody, createSession } = require('../lib/http');
+const { query } = require('../db');
+const {
+  sendJson,
+  readJsonBody,
+  createSession,
+} = require('../http');
 
-module.exports = async (req, res) => {
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.statusCode = 405;
-    return res.end('Method Not Allowed');
+    res.setHeader('Allow', 'POST');
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
   }
 
-  const body = await readJsonBody(req);
-  const username = (body.username || '').trim();
-  const password = (body.password || '').trim();
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    return sendJson(res, 400, { ok: false, error: e.message });
+  }
 
+  const { username, password } = body || {};
   if (!username || !password) {
-    res.statusCode = 400;
-    return res.end(JSON.stringify({ error: 'กรอก username และ password' }));
+    return sendJson(res, 400, {
+      ok: false,
+      error: 'username & password required',
+    });
   }
 
-  const result = await query(
-    'SELECT id, username, password_hash FROM users WHERE username = $1',
-    [username]
-  );
+  try {
+    const result = await query(
+      'SELECT id, username, password_hash FROM users WHERE username = $1',
+      [username]
+    );
 
-  if (!result.rows.length) {
-    res.statusCode = 401;
-    return res.end(JSON.stringify({ error: 'username หรือ password ไม่ถูกต้อง' }));
+    if (!result.rows.length) {
+      return sendJson(res, 401, { ok: false, error: 'invalid credentials' });
+    }
+
+    const user = result.rows[0];
+    const match = await bcrypt.compare(password, user.password_hash);
+
+    if (!match) {
+      return sendJson(res, 401, { ok: false, error: 'invalid credentials' });
+    }
+
+    // login สำเร็จ → สร้าง session + cookie
+    await createSession(user.id, res);
+
+    return sendJson(res, 200, {
+      ok: true,
+      user: { id: user.id, username: user.username },
+    });
+  } catch (err) {
+    console.error('login error', err);
+    return sendJson(res, 500, { ok: false, error: 'internal error' });
   }
-
-  const user = result.rows[0];
-  const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) {
-    res.statusCode = 401;
-    return res.end(JSON.stringify({ error: 'username หรือ password ไม่ถูกต้อง' }));
-  }
-
-  const { token, expires } = await createSession(user.id);
-
-  // set cookie
-  res.setHeader(
-    'Set-Cookie',
-    cookie.serialize('session', token, {
-      httpOnly: true,
-      secure: true, // บน vercel เป็น https อยู่แล้ว
-      sameSite: 'lax',
-      path: '/',
-      expires,
-    })
-  );
-
-  res.setHeader('Content-Type', 'application/json');
-  res.statusCode = 200;
-  res.end(JSON.stringify({ user: { id: user.id, username: user.username } }));
 };
