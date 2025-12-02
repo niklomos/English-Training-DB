@@ -1,5 +1,11 @@
 // api/logout.js
-const { sendJson, destroySession } = require('../http');
+const { sendJson, destroySession } = require('../lib/http');
+// เดิม: const { query } = require('../db');
+const { query } = require('./db');
+
+// เดิม: const { sendJson, readJsonBody, ... } = require('../http');
+const { sendJson, readJsonBody, createSession, getSessionUser, destroySession } = require('../lib/http');
+
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {

@@ -1,4 +1,4 @@
-// db.js
+// api/db.js
 const { Pool } = require('pg');
 
 if (!process.env.DATABASE_URL) {
@@ -7,9 +7,9 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Neon ต้องใช้ SSL
-  ssl: { rejectUnauthorized: false },
-  max: 5,
+  ssl: {
+    rejectUnauthorized: false,  // Neon ต้องใช้ SSL
+  },
 });
 
 async function query(text, params) {
@@ -17,7 +17,4 @@ async function query(text, params) {
   return res;
 }
 
-module.exports = {
-  pool,
-  query,
-};
+module.exports = { query, pool };
