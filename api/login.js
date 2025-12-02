@@ -4,7 +4,7 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const cookie = require('cookie');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');   // ✅ ใช้ของ Node แทน uuid package
 
 const SESSION_COOKIE = 'vt_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 วัน
@@ -15,14 +15,12 @@ const connectionString =
   process.env.POSTGRES_URL ||
   process.env.POSTGRES_URL_NON_POOLING;
 
-if (!connectionString) {
-  throw new Error('DATABASE_URL / POSTGRES_URL not set');
-}
-
-// ทำ global pool ไว้ใช้ซ้ำ
 let pool;
 function getPool() {
   if (!pool) {
+    if (!connectionString) {
+      throw new Error('DATABASE_URL / POSTGRES_URL not set');
+    }
     pool = new Pool({
       connectionString,
       ssl: { rejectUnauthorized: false }, // Neon ใช้ SSL
@@ -55,12 +53,12 @@ function sendJson(res, status, data) {
 }
 
 module.exports = async (req, res) => {
-  // GET เอาไว้ test เฉย ๆ
+  // GET เอาไว้ test ว่า function ยังรันได้
   if (req.method === 'GET') {
     return sendJson(res, 200, {
       ok: true,
       method: 'GET',
-      message: 'login endpoint test (with DB logic)',
+      message: 'login endpoint test (DB + sessions)',
     });
   }
 
@@ -89,20 +87,28 @@ module.exports = async (req, res) => {
     );
 
     if (!userResult.rows.length) {
-      // ไม่บอกว่า user ไม่มี ให้ใช้ข้อความรวม ๆ เพื่อความปลอดภัย
-      return sendJson(res, 400, { ok: false, error: 'username หรือ password ไม่ถูกต้อง' });
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'username หรือ password ไม่ถูกต้อง',
+      });
     }
 
     const user = userResult.rows[0];
 
-    // เช็ก password
-    const ok = await bcrypt.compare(String(password), user.password_hash || '');
+    // เช็ครหัสผ่าน
+    const ok = await bcrypt.compare(
+      String(password),
+      user.password_hash || ''
+    );
     if (!ok) {
-      return sendJson(res, 400, { ok: false, error: 'username หรือ password ไม่ถูกต้อง' });
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'username หรือ password ไม่ถูกต้อง',
+      });
     }
 
     // สร้าง session ใหม่
-    const sessionId = uuidv4();
+    const sessionId = randomUUID();  // ✅ ใช้ randomUUID แทน uuid.v4()
     const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000);
 
     await pool.query(
@@ -114,7 +120,7 @@ module.exports = async (req, res) => {
     // set cookie
     const cookieHeader = cookie.serialize(SESSION_COOKIE, sessionId, {
       httpOnly: true,
-      secure: true,      // ใช้ https บน vercel
+      secure: true,      // บน Vercel เป็น https อยู่แล้ว
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_MAX_AGE_SECONDS,
