@@ -1,81 +1,109 @@
 // api/register.js
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
-const { serialize } = require('cookie');
-const { query } = require('./db');
+const { v4: uuidv4 } = require('uuid'); // เผื่อใช้ทีหลัง
+const { getPool, sendJson } = require('./db');
 
-module.exports = async (req, res) => {
+// helper อ่าน body (เพราะเราไม่ได้ใช้ Express)
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      // กัน body ใหญ่เกิน (1MB)
+      if (data.length > 1e6) {
+        req.destroy();
+        reject(new Error('Body too large'));
+      }
+    });
+    req.on('end', () => {
+      if (!data) return resolve({});
+      try {
+        const json = JSON.parse(data);
+        resolve(json);
+      } catch (err) {
+        reject(new Error('Invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+module.exports = async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+  }
+
   try {
-    if (req.method !== 'POST') {
-      res.statusCode = 405;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
-      return;
-    }
-
-    const { username, password } = req.body || {};
+    const body = await readBody(req);
+    const { username, password } = body || {};
 
     if (!username || !password) {
-      res.statusCode = 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(
-        JSON.stringify({ error: 'username & password required' })
-      );
-      return;
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'username และ password ห้ามว่าง',
+      });
     }
 
-    // 1) เช็กว่า username ซ้ำไหม
-    const existing = await query(
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'รูปแบบข้อมูลไม่ถูกต้อง',
+      });
+    }
+
+    const trimmedUser = username.trim();
+    if (trimmedUser.length < 3) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'username ต้องยาวอย่างน้อย 3 ตัวอักษร',
+      });
+    }
+    if (password.length < 4) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'password ต้องยาวอย่างน้อย 4 ตัวอักษร',
+      });
+    }
+
+    const pool = getPool();
+
+    // เช็คว่าซ้ำหรือยัง
+    const existing = await pool.query(
       'SELECT id FROM users WHERE username = $1',
-      [username]
+      [trimmedUser]
     );
 
-    if (existing.rows.length > 0) {
-      res.statusCode = 409;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Username already taken' }));
-      return;
+    if (existing.rowCount > 0) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: 'username นี้ถูกใช้แล้ว',
+      });
     }
 
-    // 2) hash password
+    // hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // 3) insert users
-    const userResult = await query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id',
-      [username, passwordHash]
+    const inserted = await pool.query(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
+      [trimmedUser, passwordHash]
     );
 
-    const userId = userResult.rows[0].id;
+    const user = inserted.rows[0];
 
-    // 4) สร้าง session + token
-    const token = uuidv4();
-    const expiresAt = new Date(
-      Date.now() + 30 * 24 * 60 * 60 * 1000
-    ); // 30 วัน
-
-    await query(
-      'INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, $3)',
-      [token, userId, expiresAt.toISOString()]
-    );
-
-    // 5) set cookie
-    const cookie = serialize('session', token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: true, // บน https
-      path: '/',
-      maxAge: 30 * 24 * 60 * 60, // 30 วัน
+    return sendJson(res, 201, {
+      ok: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        created_at: user.created_at,
+      },
     });
-
-    res.setHeader('Set-Cookie', cookie);
-    res.statusCode = 201;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok: true, userId }));
   } catch (err) {
-    console.error('Register handler error:', err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ error: 'Internal server error' }));
+    console.error('REGISTER ERROR:', err);
+    return sendJson(res, 500, {
+      ok: false,
+      error: 'Server error: ' + err.message,
+    });
   }
 };
