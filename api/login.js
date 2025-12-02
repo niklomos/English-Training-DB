@@ -1,12 +1,136 @@
 // api/login.js
+// ล็อกอิน: เช็ก username/password แล้วสร้าง session + cookie
 
-const { sendJson } = require('./db');
+const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+const cookie = require('cookie');
+const { v4: uuidv4 } = require('uuid');
 
-module.exports = (req, res) => {
-  // ฟังก์ชันง่าย ๆ ไว้ทดสอบก่อน
-  return sendJson(res, 200, {
-    ok: true,
-    method: req.method,
-    message: 'login endpoint test',
+const SESSION_COOKIE = 'vt_session';
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 วัน
+
+// ใช้ DATABASE_URL / POSTGRES_URL / POSTGRES_URL_NON_POOLING ตัวไหนก็ได้ที่มี
+const connectionString =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_URL_NON_POOLING;
+
+if (!connectionString) {
+  throw new Error('DATABASE_URL / POSTGRES_URL not set');
+}
+
+// ทำ global pool ไว้ใช้ซ้ำ
+let pool;
+function getPool() {
+  if (!pool) {
+    pool = new Pool({
+      connectionString,
+      ssl: { rejectUnauthorized: false }, // Neon ใช้ SSL
+    });
+  }
+  return pool;
+}
+
+// helper: อ่าน JSON body
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', chunk => (data += chunk));
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
   });
+}
+
+// helper: ส่ง JSON
+function sendJson(res, status, data) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(data));
+}
+
+module.exports = async (req, res) => {
+  // GET เอาไว้ test เฉย ๆ
+  if (req.method === 'GET') {
+    return sendJson(res, 200, {
+      ok: true,
+      method: 'GET',
+      message: 'login endpoint test (with DB logic)',
+    });
+  }
+
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST, GET');
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
+  }
+
+  try {
+    const body = await parseJsonBody(req);
+    const { username, password } = body || {};
+
+    if (!username || !password) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'ต้องมี username และ password',
+      });
+    }
+
+    const pool = getPool();
+
+    // ดึง user จาก DB
+    const userResult = await pool.query(
+      'SELECT id, username, password_hash FROM users WHERE username = $1',
+      [username]
+    );
+
+    if (!userResult.rows.length) {
+      // ไม่บอกว่า user ไม่มี ให้ใช้ข้อความรวม ๆ เพื่อความปลอดภัย
+      return sendJson(res, 400, { ok: false, error: 'username หรือ password ไม่ถูกต้อง' });
+    }
+
+    const user = userResult.rows[0];
+
+    // เช็ก password
+    const ok = await bcrypt.compare(String(password), user.password_hash || '');
+    if (!ok) {
+      return sendJson(res, 400, { ok: false, error: 'username หรือ password ไม่ถูกต้อง' });
+    }
+
+    // สร้าง session ใหม่
+    const sessionId = uuidv4();
+    const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000);
+
+    await pool.query(
+      `INSERT INTO sessions (id, user_id, created_at, expires_at)
+       VALUES ($1, $2, NOW(), $3)`,
+      [sessionId, user.id, expiresAt]
+    );
+
+    // set cookie
+    const cookieHeader = cookie.serialize(SESSION_COOKIE, sessionId, {
+      httpOnly: true,
+      secure: true,      // ใช้ https บน vercel
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_MAX_AGE_SECONDS,
+    });
+
+    res.setHeader('Set-Cookie', cookieHeader);
+
+    return sendJson(res, 200, {
+      ok: true,
+      user: {
+        id: user.id,
+        username: user.username,
+      },
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    return sendJson(res, 500, { ok: false, error: 'internal_error' });
+  }
 };
