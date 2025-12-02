@@ -1,10 +1,6 @@
 // api/login.js
 const bcrypt = require('bcryptjs');
-// เดิม: const { query } = require('../db');
-const { query } = require('./db');
-
-// เดิม: const { sendJson, readJsonBody, ... } = require('../http');
-const { sendJson, readJsonBody, createSession, getSessionUser, destroySession } = require('../lib/http');
+const { query } = require('../db');
 const {
   sendJson,
   readJsonBody,
