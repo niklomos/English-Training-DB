@@ -1,20 +1,31 @@
 // api/db.js
 const { Pool } = require('pg');
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is not set');
+const connectionString =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_URL_NON_POOLING;
+
+let pool;
+
+function getPool() {
+  if (!pool) {
+    if (!connectionString) {
+      throw new Error('DATABASE_URL / POSTGRES_URL is not set');
+    }
+
+    pool = new Pool({
+      connectionString,
+      ssl: { rejectUnauthorized: false }, // สำหรับ Neon บน Vercel
+    });
+  }
+  return pool;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,  // Neon ต้องใช้ SSL
-  },
-});
-
-async function query(text, params) {
-  const res = await pool.query(text, params);
-  return res;
+function sendJson(res, status, data) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(data));
 }
 
-module.exports = { query, pool };
+module.exports = { getPool, sendJson };
