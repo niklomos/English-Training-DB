@@ -1,63 +1,73 @@
 // api/login.js
 const bcrypt = require('bcryptjs');
-// เดิม: const { query } = require('../db');
-const { query } = require('./db');
+const cookie = require('cookie');
+const { v4: uuidv4 } = require('uuid');
+const { query, sendJson, readJsonBody } = require('./db');
 
-// เดิม: const { sendJson, readJsonBody, ... } = require('../http');
-const { sendJson, readJsonBody, createSession, getSessionUser, destroySession } = require('../lib/http');
-const {
-  sendJson,
-  readJsonBody,
-  createSession,
-} = require('../http');
-
-module.exports = async function handler(req, res) {
+module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return sendJson(res, 405, { ok: false, error: 'Method not allowed' });
   }
 
-  let body;
   try {
-    body = await readJsonBody(req);
-  } catch (e) {
-    return sendJson(res, 400, { ok: false, error: e.message });
-  }
+    const body = await readJsonBody(req);
+    const { username, password } = body || {};
 
-  const { username, password } = body || {};
-  if (!username || !password) {
-    return sendJson(res, 400, {
-      ok: false,
-      error: 'username & password required',
-    });
-  }
+    if (!username || !password) {
+      return sendJson(res, 400, {
+        ok: false,
+        error: 'username และ password ต้องไม่ว่าง',
+      });
+    }
 
-  try {
+    // หา user
     const result = await query(
       'SELECT id, username, password_hash FROM users WHERE username = $1',
       [username]
     );
 
-    if (!result.rows.length) {
-      return sendJson(res, 401, { ok: false, error: 'invalid credentials' });
+    if (result.rows.length === 0) {
+      return sendJson(res, 401, { ok: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
     const user = result.rows[0];
-    const match = await bcrypt.compare(password, user.password_hash);
 
+    // เช็ครหัสผ่าน
+    const match = await bcrypt.compare(password, user.password_hash);
     if (!match) {
-      return sendJson(res, 401, { ok: false, error: 'invalid credentials' });
+      return sendJson(res, 401, { ok: false, error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
-    // login สำเร็จ → สร้าง session + cookie
-    await createSession(user.id, res);
+    // สร้าง session
+    const sessionId = uuidv4();
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 วัน
+
+    await query(
+      'INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, $3)',
+      [sessionId, user.id, expiresAt]
+    );
+
+    // set cookie
+    const cookieStr = cookie.serialize('session', sessionId, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 30 * 24 * 60 * 60,
+    });
+
+    res.setHeader('Set-Cookie', cookieStr);
 
     return sendJson(res, 200, {
       ok: true,
-      user: { id: user.id, username: user.username },
+      user: {
+        id: user.id,
+        username: user.username,
+      },
     });
   } catch (err) {
     console.error('login error', err);
-    return sendJson(res, 500, { ok: false, error: 'internal error' });
+    return sendJson(res, 500, { ok: false, error: 'Server error (login)' });
   }
 };
