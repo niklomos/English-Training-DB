@@ -4,12 +4,14 @@ const { getPool, sendJson } = require('./db');
 module.exports = async function handler(req, res) {
   try {
     const pool = getPool();
+
+    // ลองยิง query ง่าย ๆ
     const result = await pool.query('SELECT 1 AS ok');
 
     sendJson(res, 200, {
       ok: true,
       method: req.method,
-      db: result.rows[0],
+      db: result.rows[0],    // { ok: 1 }
       time: new Date().toISOString(),
     });
   } catch (err) {

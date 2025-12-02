@@ -16,7 +16,7 @@ function getPool() {
 
     pool = new Pool({
       connectionString,
-      ssl: { rejectUnauthorized: false }, // ใช้กับ Neon บน Vercel
+      ssl: { rejectUnauthorized: false }, // สำหรับ Neon บน Vercel
     });
   }
   return pool;
